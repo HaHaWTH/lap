@@ -75,7 +75,10 @@ jobs:
 
       - name: Build Windows x64 executable
         shell: pwsh
-        run: tauri build --target $env:RUST_TARGET --no-bundle --features intel-npu,portable-data --config src-tauri/tauri.npu.conf.json -- --locked
+        run: |
+          cargo metadata --locked --format-version 1 --manifest-path src-tauri/Cargo.toml --filter-platform $env:RUST_TARGET --features intel-npu | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          tauri build --target $env:RUST_TARGET --no-bundle --features intel-npu --config src-tauri/tauri.npu.conf.json
 
       - name: Stage portable files
         shell: pwsh
@@ -125,6 +128,9 @@ jobs:
           if ($result.data_dir -ne $data -or $result.temp_dir.TrimEnd('\') -ne (Join-Path $data 'tmp') -or
               $result.webview_dir -ne (Join-Path $data 'webview')) {
             throw 'Portable data directory configuration was not applied'
+          }
+          if (-not (Get-ChildItem -LiteralPath (Join-Path $data 'cache/openvino') -Filter '*.blob' -File)) {
+            throw 'OpenVINO did not write its compiled cache to the configured data directory'
           }
           Set-Content -LiteralPath $config -Value 'data' -Encoding utf8
 

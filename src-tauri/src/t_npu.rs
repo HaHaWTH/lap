@@ -21,13 +21,9 @@ fn executable_dir() -> Result<PathBuf> {
 fn core_for(device: &DeviceType<'_>) -> Result<Core> {
     openvino_sys::library::load_from(executable_dir()?.join("openvino_c.dll"))?;
     let mut core = Core::new()?;
-    if device == &DeviceType::NPU {
-        core.set_property(
-            device,
-            &RwPropertyKey::Other("NPU_BYPASS_UMD_CACHE".into()),
-            "YES",
-        )?;
-    }
+    let cache = crate::t_portable::data_dir().join("cache").join("openvino");
+    let cache = cache.to_str().ok_or("OpenVINO cache path is not valid Unicode")?;
+    core.set_property(device, &RwPropertyKey::CacheDir, cache)?;
     Ok(core)
 }
 
@@ -188,7 +184,6 @@ fn check_text(path: &Path, multilingual: bool, device: DeviceType<'_>) -> Result
 }
 
 fn verify(device: DeviceType<'_>, multilingual: Option<PathBuf>) -> Result<serde_json::Value> {
-    #[cfg(feature = "portable-data")]
     crate::t_portable::initialize()?;
 
     let models = executable_dir()?.join("models");
@@ -203,13 +198,10 @@ fn verify(device: DeviceType<'_>, multilingual: Option<PathBuf>) -> Result<serde
     let mut report = serde_json::json!({
         "vision": { "execution_devices": image.execution_devices, "dimensions": EMBEDDING_SIZE, "mean_ms": vision_ms },
         "english": check_text(&models, false, device.to_owned())?,
+        "data_dir": crate::t_portable::data_dir(),
+        "temp_dir": std::env::temp_dir(),
+        "webview_dir": std::env::var("WEBVIEW2_USER_DATA_FOLDER")?,
     });
-    #[cfg(feature = "portable-data")]
-    {
-        report["data_dir"] = serde_json::json!(crate::t_portable::data_dir());
-        report["temp_dir"] = serde_json::json!(std::env::temp_dir());
-        report["webview_dir"] = serde_json::json!(std::env::var("WEBVIEW2_USER_DATA_FOLDER")?);
-    }
     if let Some(path) = multilingual {
         report["multilingual"] = check_text(&path, true, device)?;
     }

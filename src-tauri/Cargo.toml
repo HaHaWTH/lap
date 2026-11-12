@@ -101,5 +101,5 @@ openvino-sys = { version = "=0.11.0", features = ["runtime-linking"], optional =
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 devtools = ["tauri/devtools"]
-intel-npu = ["dep:openvino", "dep:openvino-sys"]
+intel-npu = ["dep:openvino", "dep:openvino-sys", "portable-data"]
 portable-data = []
