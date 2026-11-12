@@ -437,6 +437,12 @@ impl Default for AppConfig {
 }
 
 /// Get the AppData directory for app
+#[cfg(all(target_os = "windows", feature = "portable-data"))]
+pub fn get_app_data_dir() -> Result<PathBuf, String> {
+    Ok(crate::t_portable::data_dir().to_path_buf())
+}
+
+#[cfg(not(all(target_os = "windows", feature = "portable-data")))]
 pub fn get_app_data_dir() -> Result<PathBuf, String> {
     let app_dir_name = get_app_data_folder_name();
     dirs::data_local_dir()
@@ -444,6 +450,7 @@ pub fn get_app_data_dir() -> Result<PathBuf, String> {
         .map(|p| p.join(app_dir_name))
 }
 
+#[cfg(not(all(target_os = "windows", feature = "portable-data")))]
 fn get_app_data_folder_name() -> String {
     let identifier = APP_IDENTIFIER
         .get()
@@ -461,6 +468,12 @@ fn get_app_data_folder_name() -> String {
 /// macos: ~/Library/Caches/com.julyx10.lap
 /// windows: C:\Users\<username>\AppData\Local\com.julyx10.lap\cache
 /// linux: ~/.cache/com.julyx10.lap
+#[cfg(all(target_os = "windows", feature = "portable-data"))]
+pub fn get_app_cache_dir() -> Result<PathBuf, String> {
+    Ok(crate::t_portable::data_dir().join("cache"))
+}
+
+#[cfg(not(all(target_os = "windows", feature = "portable-data")))]
 pub fn get_app_cache_dir() -> Result<PathBuf, String> {
     let app_dir_name = get_app_data_folder_name();
     dirs::cache_dir()

@@ -5,11 +5,15 @@
 use crate::t_common;
 use image::DynamicImage;
 use ndarray::{Array, Array4};
-use ort::{
-    inputs,
-    session::{Session, builder::GraphOptimizationLevel},
-    value::Value,
-};
+use ort::session::{Session, builder::GraphOptimizationLevel};
+#[cfg(not(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64")))]
+use ort::{inputs, value::Value};
+#[cfg(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64"))]
+use crate::t_npu::{TextEncoder as TextSession, VisionEncoder as VisionSession};
+#[cfg(not(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64")))]
+type TextSession = Session;
+#[cfg(not(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64")))]
+type VisionSession = Session;
 use reqwest::header::{CONTENT_RANGE, RANGE, USER_AGENT};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -27,8 +31,8 @@ use tokenizers::Tokenizer;
 use tokio::io::AsyncWriteExt;
 
 pub struct AiEngine {
-    text_model: Option<Session>,
-    vision_model: Option<Session>,
+    text_model: Option<TextSession>,
+    vision_model: Option<VisionSession>,
     tokenizer: Option<Tokenizer>,
     text_model_kind: ImageSearchTextModel,
 }
@@ -187,6 +191,10 @@ impl AiEngine {
         let vision_model_path = resource_dir.join(t_common::AI_VISION_MODEL);
         // Load Vision Model
         if self.vision_model.is_none() {
+            #[cfg(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64"))]
+            let vision_model = VisionSession::open(&vision_model_path, openvino::DeviceType::NPU)
+                .map_err(|error| format!("Intel NPU vision model: {error}"))?;
+            #[cfg(not(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64")))]
             let vision_model = Self::load_session(&vision_model_path, "vision")?;
             self.vision_model = Some(vision_model);
         }
@@ -286,6 +294,15 @@ impl AiEngine {
 
         let tokenizer = Tokenizer::from_file(&paths.tokenizer)
             .map_err(|e| format!("Failed to load tokenizer from {:?}: {}", paths.tokenizer, e))?;
+        #[cfg(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64"))]
+        let text_model = TextSession::open(
+            &paths.model,
+            &tokenizer,
+            model == ImageSearchTextModel::Multilingual,
+            openvino::DeviceType::NPU,
+        )
+        .map_err(|error| format!("Intel NPU text model: {error}"))?;
+        #[cfg(not(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64")))]
         let text_model = Self::load_session(&paths.model, "text")?;
 
         let previous_text_model = self.text_model.take();
@@ -332,9 +349,20 @@ impl AiEngine {
             .encode(text, true)
             .map_err(|e| format!("Tokenization error: {}", e))?;
 
-        let input_ids = encoding.get_ids();
-        let attention_mask = encoding.get_attention_mask();
+        self.run_text_model(encoding.get_ids(), encoding.get_attention_mask())
+    }
 
+    #[cfg(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64"))]
+    fn run_text_model(&mut self, input_ids: &[u32], attention_mask: &[u32]) -> Result<Vec<f32>, String> {
+        self.text_model
+            .as_mut()
+            .unwrap()
+            .encode(input_ids, attention_mask)
+            .map_err(|error| format!("Intel NPU text inference: {error}"))
+    }
+
+    #[cfg(not(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64")))]
+    fn run_text_model(&mut self, input_ids: &[u32], attention_mask: &[u32]) -> Result<Vec<f32>, String> {
         let input_ids_array = Array::from_shape_vec(
             (1, input_ids.len()),
             input_ids.iter().map(|&x| x as i64).collect(),
@@ -383,6 +411,7 @@ impl AiEngine {
         Self::extract_text_embedding(embedding, first_token_only)
     }
 
+    #[cfg(not(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64")))]
     fn extract_text_embedding(
         embedding: &ort::value::DynValue,
         first_token_only: bool,
@@ -431,6 +460,16 @@ impl AiEngine {
         self.run_vision_model(image_input)
     }
 
+    #[cfg(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64"))]
+    fn run_vision_model(&mut self, image_input: Array4<f32>) -> Result<Vec<f32>, String> {
+        self.vision_model
+            .as_mut()
+            .unwrap()
+            .encode(image_input.as_slice().expect("CLIP pixels have contiguous storage"))
+            .map_err(|error| format!("Intel NPU image inference: {error}"))
+    }
+
+    #[cfg(not(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64")))]
     fn run_vision_model(&mut self, image_input: Array4<f32>) -> Result<Vec<f32>, String> {
         let image_input_value = Value::from_array(image_input).map_err(|e| e.to_string())?;
 

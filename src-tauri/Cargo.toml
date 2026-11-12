@@ -90,10 +90,16 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["N
 
 [target.'cfg(target_os = "windows")'.dependencies]
 clipboard-win = "5.4.1"
-windows = { version = "0.61.3", default-features = false, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+windows = { version = "0.61.3", default-features = false, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(all(target_os = "windows", target_arch = "x86_64"))'.dependencies]
+openvino = { version = "=0.11.0", features = ["runtime-linking"], optional = true }
+openvino-sys = { version = "=0.11.0", features = ["runtime-linking"], optional = true }
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 devtools = ["tauri/devtools"]
+intel-npu = ["dep:openvino", "dep:openvino-sys"]
+portable-data = []

@@ -37,7 +37,11 @@ mod t_migration;
 mod t_montage;
 mod t_tag_groups;
 mod t_motion_photo;
+#[cfg(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64"))]
+mod t_npu;
 mod t_pasteboard;
+#[cfg(all(target_os = "windows", feature = "portable-data"))]
+mod t_portable;
 mod t_protocol;
 mod t_similar;
 mod t_sqlite;
@@ -49,6 +53,15 @@ mod t_video;
 /// The main function is the entry point for the Tauri application.
 #[tokio::main]
 async fn main() {
+    #[cfg(all(feature = "intel-npu", target_os = "windows", target_arch = "x86_64"))]
+    t_npu::run_check_if_requested();
+
+    #[cfg(all(target_os = "windows", feature = "portable-data"))]
+    if let Err(error) = t_portable::initialize() {
+        t_portable::show_startup_error(&error);
+        return;
+    }
+
     std::panic::set_hook(Box::new(|panic_info| {
         eprintln!("Unhandled panic: {}", panic_info);
     }));
@@ -66,8 +79,10 @@ async fn main() {
         None => builder,
     };
 
+    #[cfg(not(all(target_os = "windows", feature = "portable-data")))]
+    let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
+
     let run_result = builder
-        .plugin(tauri_plugin_window_state::Builder::default().build()) // macOS: ~/Library/Application Support/{APP_NAME}/window-state.json
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
@@ -107,6 +122,18 @@ async fn main() {
             t_video::init_ffmpeg_path(&_app.handle());
             t_config::set_app_identifier(&_app.config().identifier);
             t_menu::install_app_menu(&_app.handle())?;
+
+            #[cfg(all(target_os = "windows", feature = "portable-data"))]
+            {
+                let data = t_portable::data_dir();
+                for folder in [data.join("cache"), data.join("tmp")] {
+                    t_utils::authorize_directory_scope(_app.handle(), &folder.to_string_lossy())
+                        .map_err(std::io::Error::other)?;
+                }
+                if let Some(window) = _app.get_webview_window("main") {
+                    t_portable::restore_main_window(&window);
+                }
+            }
 
             #[cfg(not(target_os = "macos"))]
             if let Some(window) = _app.get_webview_window("main") {
@@ -173,6 +200,10 @@ async fn main() {
 
                 #[cfg(not(target_os = "macos"))]
                 {
+                    #[cfg(all(target_os = "windows", feature = "portable-data"))]
+                    if let Err(error) = t_portable::save_main_window(window) {
+                        eprintln!("Failed to save portable window state: {error}");
+                    }
                     let app_handle = window.app_handle();
 
                     // Close every other window first (image viewer, settings, ...),

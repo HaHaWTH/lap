@@ -1,0 +1,136 @@
+name: Build Lap NPU Portable
+
+on:
+  push:
+    branches: [intel-npu]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lap-npu-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    env:
+      TAURI_CLI_VERSION: '2.12.0'
+      RUST_TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: '2022'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install frontend and build tools
+        shell: pwsh
+        run: |
+          pnpm --dir src-vite install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm install -g "@tauri-apps/cli@$env:TAURI_CLI_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $paths = $env:PATH -split ';' | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'ranlib.exe')) }
+          "PATH=$($paths -join ';')" >> $env:GITHUB_ENV
+
+      - name: Fetch models and runtime files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\scripts\download_models.ps1
+          .\scripts\download_ffmpeg_sidecar.ps1 -Arch x64
+          python -m pip install --only-binary=:all: --no-deps openvino==2025.1.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $modelBase = 'https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx'
+          $models = @(
+            @{ Name = 'vision_model'; Sha256 = '35C4E0FB0AEEE527DCDE1693520B214A34424A786BABD530F35366BAD5844EFD' },
+            @{ Name = 'text_model'; Sha256 = 'DF587FFBF248BF20D44FA6E16ADC5EBC27EAD691860E5333DBDAAB5FD6BF3F6E' }
+          )
+          foreach ($model in $models) {
+            $file = "src-tauri/resources/models/$($model.Name).onnx"
+            Invoke-WebRequest -Uri "$modelBase/$($model.Name)_fp16.onnx" -OutFile $file
+            if ((Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash -ne $model.Sha256) {
+              throw "Model checksum changed for $($model.Name)"
+            }
+          }
+
+      - name: Build Windows x64 executable
+        shell: pwsh
+        run: tauri build --target $env:RUST_TARGET --no-bundle --features intel-npu,portable-data --config src-tauri/tauri.npu.conf.json -- --locked
+
+      - name: Stage portable files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = "src-tauri/target/$env:RUST_TARGET/release"
+          $stage = New-Item -ItemType Directory -Path 'dist/Lap-NPU' -Force
+          Copy-Item -LiteralPath "$target/Lap.exe" -Destination "$stage/Lap-NPU.exe"
+          Get-ChildItem -LiteralPath $target -Filter '*.dll' -File | Copy-Item -Destination $stage
+          Copy-Item -LiteralPath 'src-tauri/resources/models','src-tauri/resources/ffmpeg' -Destination $stage -Recurse
+          Copy-Item -LiteralPath 'LICENSE','docs/Lap-NPU-Portable.zh-CN.md' -Destination $stage
+          $licenses = New-Item -ItemType Directory -Path "$stage/licenses" -Force
+          Copy-Item -LiteralPath 'THIRD_PARTY_NOTICES.txt' -Destination $licenses
+          $site = python -c "import sysconfig; print(sysconfig.get_path('purelib'))"
+          $libs = Join-Path $site 'openvino/libs'
+          $runtimeDlls = @(
+            'openvino.dll',
+            'openvino_c.dll',
+            'openvino_onnx_frontend.dll',
+            'openvino_ir_frontend.dll',
+            'openvino_intel_npu_plugin.dll',
+            'openvino_intel_cpu_plugin.dll'
+          )
+          foreach ($dll in $runtimeDlls) {
+            Copy-Item -LiteralPath (Join-Path $libs $dll) -Destination $stage
+          }
+          Get-ChildItem -LiteralPath $libs -Filter 'tbb*.dll' -File | Copy-Item -Destination $stage
+          Copy-Item -LiteralPath (Join-Path $site 'openvino-2025.1.0.dist-info/LICENSE') -Destination "$licenses/OpenVINO-LICENSE.txt"
+
+      - name: Verify portable layout and packaged OpenVINO inference
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = (Resolve-Path -LiteralPath 'dist/Lap-NPU').Path
+          $config = Join-Path $stage 'lap-data-dir.txt'
+          $data = Join-Path $env:RUNNER_TEMP 'Lap portable data'
+          $report = Join-Path $env:RUNNER_TEMP 'lap-openvino.json'
+          Set-Content -LiteralPath $config -Value $data -Encoding utf8
+          $proc = Start-Process -FilePath "$stage/Lap-NPU.exe" -ArgumentList '--check-openvino-cpu',"`"$report`"" -Wait -PassThru -WindowStyle Hidden
+          if (Test-Path -LiteralPath $report) { Get-Content -LiteralPath $report }
+          if ($proc.ExitCode -ne 0) { throw "Packaged OpenVINO check failed with exit code $($proc.ExitCode)" }
+          $result = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          if ($result.vision.execution_devices -ne 'CPU' -or $result.vision.dimensions -ne 512 -or
+              $result.english.execution_devices -ne 'CPU' -or $result.english.dimensions -ne 512) {
+            throw 'Expected 512-element image and text embeddings from the packaged OpenVINO CPU plugin'
+          }
+          if ($result.data_dir -ne $data -or $result.temp_dir.TrimEnd('\') -ne (Join-Path $data 'tmp') -or
+              $result.webview_dir -ne (Join-Path $data 'webview')) {
+            throw 'Portable data directory configuration was not applied'
+          }
+          Set-Content -LiteralPath $config -Value 'data' -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lap-NPU-v0.3.3-Windows-x64-portable
+          path: dist/Lap-NPU/
+          if-no-files-found: error
+          retention-days: 30

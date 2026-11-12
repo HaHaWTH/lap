@@ -1,0 +1,16 @@
+{
+  "productName": "Lap NPU",
+  "identifier": "com.julyx10.lap.npu",
+  "build": {
+    "beforeBuildCommand": "pnpm --dir ../src-vite build || pnpm --dir src-vite build"
+  },
+  "bundle": {
+    "active": false,
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  }
+}

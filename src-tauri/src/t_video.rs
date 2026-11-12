@@ -1081,8 +1081,19 @@ pub enum VideoAction {
     Transcode,
 }
 
+fn video_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(all(target_os = "windows", feature = "portable-data"))]
+    let cache = {
+        let _ = app;
+        crate::t_config::get_app_cache_dir()
+    };
+    #[cfg(not(all(target_os = "windows", feature = "portable-data")))]
+    let cache = app.path().app_cache_dir().map_err(|e| e.to_string());
+    cache.map(|dir| dir.join("video_cache"))
+}
+
 pub fn init_video_cache(app: &AppHandle) {
-    if let Ok(d) = app.path().app_cache_dir().map(|d| d.join("video_cache")) {
+    if let Ok(d) = video_cache_dir(app) {
         if !d.exists() {
             let _ = std::fs::create_dir_all(&d);
         }
@@ -1106,7 +1117,7 @@ pub async fn clear_video_cache(
     // Windows Fix: Give the OS a moment to release file handles after killing processes
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    if let Ok(d) = app.path().app_cache_dir().map(|d| d.join("video_cache")) {
+    if let Ok(d) = video_cache_dir(&app) {
         if d.exists() {
             let _ = tokio::fs::remove_dir_all(&d).await;
             let _ = tokio::fs::create_dir_all(&d).await;
@@ -1253,11 +1264,7 @@ pub async fn prepare_video(
     #[cfg(target_os = "macos")]
     let mut try_software_enc = false;
 
-    let temp_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| e.to_string())?
-        .join("video_cache");
+    let temp_dir = video_cache_dir(&app)?;
     if !temp_dir.exists() {
         let _ = tokio::fs::create_dir_all(&temp_dir).await;
     }
