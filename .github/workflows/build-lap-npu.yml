@@ -19,6 +19,7 @@ jobs:
     env:
       TAURI_CLI_VERSION: '2.12.0'
       RUST_TARGET: x86_64-pc-windows-msvc
+      ORT_PREFER_DYNAMIC_LINK: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,6 +61,20 @@ jobs:
           python -m pip install --only-binary=:all: --no-deps openvino==2025.1.0
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          # Lap still uses ORT for face recognition and to validate downloaded text models.
+          $ortName = 'onnxruntime-win-x64-1.22.0'
+          $ortZip = Join-Path $env:RUNNER_TEMP "$ortName.zip"
+          Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/$ortName.zip" -OutFile $ortZip
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $ortZip).Hash -ne '174C616EFC0271194488642A72F1A514E01487DA4DFE84C49296D66E40EBE0DA') {
+            throw 'ONNX Runtime archive checksum changed'
+          }
+          Expand-Archive -LiteralPath $ortZip -DestinationPath $env:RUNNER_TEMP
+          $ort = Join-Path $env:RUNNER_TEMP $ortName
+          if (-not (Test-Path -LiteralPath (Join-Path $ort 'lib/onnxruntime.lib'))) {
+            throw 'The ONNX Runtime import library is missing'
+          }
+          "ORT_LIB_LOCATION=$ort" >> $env:GITHUB_ENV
+
           $modelBase = 'https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx'
           $models = @(
             @{ Name = 'vision_model'; Sha256 = '35C4E0FB0AEEE527DCDE1693520B214A34424A786BABD530F35366BAD5844EFD' },
@@ -92,6 +107,9 @@ jobs:
           Copy-Item -LiteralPath 'LICENSE','docs/Lap-NPU-Portable.zh-CN.md' -Destination $stage
           $licenses = New-Item -ItemType Directory -Path "$stage/licenses" -Force
           Copy-Item -LiteralPath 'THIRD_PARTY_NOTICES.txt' -Destination $licenses
+          Get-ChildItem -LiteralPath (Join-Path $env:ORT_LIB_LOCATION 'lib') -Filter '*.dll' -File | Copy-Item -Destination $stage
+          Copy-Item -LiteralPath (Join-Path $env:ORT_LIB_LOCATION 'LICENSE') -Destination "$licenses/ONNX-Runtime-LICENSE.txt"
+          Copy-Item -LiteralPath (Join-Path $env:ORT_LIB_LOCATION 'ThirdPartyNotices.txt') -Destination "$licenses/ONNX-Runtime-ThirdPartyNotices.txt"
           $site = python -c "import sysconfig; print(sysconfig.get_path('purelib'))"
           $libs = Join-Path $site 'openvino/libs'
           $runtimeDlls = @(
